@@ -30,7 +30,7 @@ with st.sidebar:
     uploaded_file = st.file_uploader("上传 CSV 文件", type=["csv"])
     
     st.markdown("---")
-    bpm_override = st.number_input("强制 BPM (可选)", min_value=60, max_value=200, value=0, help="0 表示自动计算")
+    bpm_override = st.number_input("强制 BPM (可选)", min_value=0, max_value=200, value=0, help="0 表示自动计算")
     st.markdown("---")
     st.info("示例格式: 第一列 Time, 第二列 Absorbance")
 
