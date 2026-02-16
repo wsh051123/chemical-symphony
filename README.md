@@ -16,7 +16,7 @@
 ## 🚀 快速开始
 
 ### 1. 在线使用
-直接访问 Streamlit 应用: 链接：([https://chemical-symphony.streamlit.app/](https://chemical-symphony-nbd4ejezxjtg7qw463bunz.streamlit.app/)) 
+直接访问 Streamlit 应用: 链接：([https://chemical-symphony-nbd4ejezxjtg7qw463bunz.streamlit.app/]) 
 
 ### 2. 本地运行
 
