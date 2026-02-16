@@ -59,115 +59,197 @@ def map_value_to_note(value, min_val, max_val, last_note=None):
 def generate_full_arrangement(times, values, rhythm_data, filename='chemical_full_song.mid'):
     """
     Generate elegant piano arrangement.
-    Removes drums for a cleaner, more classical feel.
+    Adapts rhythm and density based on data trends (rate of change).
     """
     mid = mido.MidiFile(type=1)
     
     # 1. Setup Timing & Global Config
     bpm = rhythm_data.get('bpm', 120)
-    # Slow down for elegance
-    if bpm > 100: bpm = bpm * 0.8
-    if bpm < 60: bpm = 60
+    # Target a relaxed Adagio to Andante range (60-90 BPM) for base
+    # Logic: if data is volatile, it will speed up naturally via note density, no need for high base BPM.
+    target_bpm = 80
     
     mid.ticks_per_beat = 480
-    ticks_per_second = (bpm / 60) * 480
+    ticks_per_second = (target_bpm / 60) * 480
     
-    total_duration = times[-1] - times[0] if times else 0
     start_time = times[0]
+    total_duration = times[-1] - start_time
     
     # --- Track 0: Melody (Acoustic Grand Piano) ---
     track0 = mido.MidiTrack()
     mid.tracks.append(track0)
-    track0.append(mido.MetaMessage('set_tempo', tempo=mido.bpm2tempo(bpm), time=0))
+    track0.append(mido.MetaMessage('set_tempo', tempo=mido.bpm2tempo(int(target_bpm)), time=0))
     track0.append(mido.MetaMessage('track_name', name='Piano Melody', time=0))
-    # Program 0: Acoustic Grand Piano
     track0.append(mido.Message('program_change', program=0, time=0, channel=0))
 
     # --- Track 1: Arpeggio/Harmony (Piano Left Hand) ---
     track1 = mido.MidiTrack()
     mid.tracks.append(track1)
     track1.append(mido.MetaMessage('track_name', name='Piano Harmony', time=0))
-    # Same instrument
     track1.append(mido.Message('program_change', program=0, time=0, channel=1))
     
-    # --- Generate Melody Content ---
+    # --- Analyze Data Trends ---
+    # Convert inputs to numpy for vectorized ops
+    time_arr = np.array(times)
+    val_arr = np.array(values)
+    min_val = np.min(val_arr)
+    max_val = np.max(val_arr)
+    span_val = max_val - min_val if max_val != min_val else 1.0
+    
+    # Normalize values 0-1
+    norm_vals = (val_arr - min_val) / span_val
+    
+    # Calculate local gradient (rate of change)
+    # We smooth it slightly to avoid jitter
+    window_size = max(1, len(val_arr) // 20)
+    # Simple rolling average of absolute difference
+    # Or just gradient of smoothed signal
+    
+    # Let's assess "volatility" per musical measure (Bar)
+    # Assume 4/4 time signature
+    seconds_per_bar = (60 / target_bpm) * 4
+    num_bars = int(np.ceil(total_duration / seconds_per_bar)) + 1
+    
     melody_events = []
-    min_val = np.min(values)
-    max_val = np.max(values)
+    harmony_events = []
+    
+    # Global average change to determine thresholds
+    global_grad = np.mean(np.abs(np.gradient(norm_vals))) if len(norm_vals) > 1 else 0
     
     last_note = None
     
-    # Use 1/8 note quantization
-    seconds_per_beat = 60 / bpm
-    seconds_per_unit = seconds_per_beat / 2 # 8th notes
-    
-    # Quantize input times
-    quantized_notes = {}
-    
-    for i, t in enumerate(times):
-        rel_time = t - start_time
-        grid_slot = round(rel_time / seconds_per_unit)
-        tick = int(grid_slot * (480/2))
+    # Progression: I - vi - IV - V (C - Am - F - G)
+    chord_roots = [48, 45, 41, 43] # C2, A1, F1, G1
+    progression_len = len(chord_roots)
+
+    for bar in range(num_bars):
+        bar_start_sec = start_time + bar * seconds_per_bar
+        bar_end_sec = bar_start_sec + seconds_per_bar
         
-        if tick not in quantized_notes:
-            quantized_notes[tick] = []
-        quantized_notes[tick].append(values[i])
+        # Determine bar style based on data in this timeframe
+        mask = (time_arr >= bar_start_sec) & (time_arr < bar_end_sec)
+        indices = np.where(mask)[0]
         
-    sorted_ticks = sorted(quantized_notes.keys())
-    
-    for tick in sorted_ticks:
-        vals = quantized_notes[tick]
-        avg_val = sum(vals) / len(vals)
+        # Default to calm if no data (e.g. end of song)
+        if len(indices) == 0:
+            intensity = 0.0
+            avg_height = 0.5
+        else:
+            local_grad = np.mean(np.abs(np.gradient(norm_vals[indices]))) if len(indices) > 1 else 0
+            avg_height = np.mean(norm_vals[indices])
+            
+            # Normalize intensity relative to global
+            if global_grad > 0:
+                intensity = local_grad / global_grad
+            else:
+                intensity = 1.0 # Flat line
         
-        # Use simple mapping
-        note = map_value_to_note(avg_val, min_val, max_val, last_note)
+        # Determine Rhythmic Density (Notes per beat)
+        # Low intensity (< 0.5) -> Quarter notes (1 note/beat) - Calm
+        # Medium intensity (0.5 - 1.5) -> Eighth notes (2 notes/beat) - Moving
+        # High intensity (> 1.5) -> Sixteenth notes (4 notes/beat) - Rapid/Agitated
         
-        # Humanize velocity
-        vel = np.random.randint(60, 90) # Gentle range
+        if intensity > 1.5:
+            notes_per_beat = 4
+            style = 'rapid'
+        elif intensity > 0.6:
+            notes_per_beat = 2
+            style = 'flowing'
+        else:
+            notes_per_beat = 1
+            style = 'calm'
+            
+        # Refine style by height: High value = louder, brighter
+        base_velocity = 60 + int(avg_height * 30)
         
-        # Duration: slightly less than full 8th
-        dur_tick = int(480/2 * 0.9)
+        # --- Generate Melody for this Bar ---
+        total_beats = 4
+        notes_in_bar = total_beats * notes_per_beat
+        ticks_per_note = int(480 / notes_per_beat)
         
-        melody_events.append({'tick': tick, 'type': 'note_on', 'note': note, 'velocity': vel, 'channel': 0})
-        melody_events.append({'tick': tick + dur_tick, 'type': 'note_off', 'note': note, 'velocity': 0, 'channel': 0})
-        last_note = note
-    
-    # Write Melody Track
+        # To avoid "dragging", ensure note duration is shorter than step
+        # Staccato for rapid, Legato for calm
+        gate = 0.95 if style == 'calm' else 0.8
+        note_dur = int(ticks_per_note * gate)
+        
+        for i in range(notes_in_bar):
+            # Calculate absolute tick
+            abs_tick_start = (bar * 480 * 4) + (i * ticks_per_note)
+            
+            # Find data value at this specific fraction of time
+            time_offset = (i / notes_in_bar) * seconds_per_bar
+            current_sec = bar_start_sec + time_offset
+            
+            # Interpolate value
+            # Find nearest index
+            idx = np.searchsorted(time_arr, current_sec)
+            idx = max(0, min(idx, len(val_arr)-1))
+            val = val_arr[idx]
+            
+            # Map Pitch
+            # If calm, stick closer to chord tones? Or simple pentatonic.
+            # Let's stick to pentatonic but maybe shift octave based on height
+            note = map_value_to_note(val, min_val, max_val, last_note)
+            
+            # Add event
+            melody_events.append({
+                'tick': abs_tick_start, 
+                'type': 'note_on', 'note': note, 'velocity': base_velocity, 'channel': 0
+            })
+            melody_events.append({
+                'tick': abs_tick_start + note_dur, 
+                'type': 'note_off', 'note': note, 'velocity': 0, 'channel': 0
+            })
+            
+            last_note = note
+
+        # --- Generate Left Hand Accompaniment for this Bar ---
+        root = chord_roots[bar % progression_len]
+        # Construct triad: Root, 3rd (approx +4), 5th (+7)
+        chord_notes = [root, root+4, root+7] # Major-ish approximation
+        # Adjust for minor chords (Am -> root+3, Dm -> root+3) 
+        if bar % 4 == 1: # Am
+             chord_notes = [root, root+3, root+7]
+             
+        lh_base_tick = bar * 480 * 4
+        
+        if style == 'calm':
+            # Block chords or half notes (Slow, sustained)
+            # Play Root on beat 1, 5th on beat 3
+            harmony_events.append({'tick': lh_base_tick, 'type': 'note_on', 'note': root - 12, 'velocity': 50, 'channel': 1})
+            harmony_events.append({'tick': lh_base_tick + 900, 'type': 'note_off', 'note': root - 12, 'velocity': 0, 'channel': 1})
+            
+            harmony_events.append({'tick': lh_base_tick + 960, 'type': 'note_on', 'note': chord_notes[2] - 12, 'velocity': 45, 'channel': 1})
+            harmony_events.append({'tick': lh_base_tick + 1800, 'type': 'note_off', 'note': chord_notes[2] - 12, 'velocity': 0, 'channel': 1})
+            
+        elif style == 'flowing':
+            # Broken chords (Quarter notes)
+            # Pattern: Root - 5th - 3rd - 5th
+            pattern = [0, 2, 1, 2]
+            for beat in range(4):
+                n = chord_notes[pattern[beat]]
+                tick = lh_base_tick + beat * 480
+                harmony_events.append({'tick': tick, 'type': 'note_on', 'note': n, 'velocity': 55, 'channel': 1})
+                harmony_events.append({'tick': tick + 400, 'type': 'note_off', 'note': n, 'velocity': 0, 'channel': 1})
+                
+        else: # rapid
+            # Alberti Bass (Eighth notes) - Energetic
+            # Pattern: Root - 5th - 3rd - 5th (x2 per bar)
+            pattern = [0, 2, 1, 2] * 2
+            for eig in range(8):
+                n = chord_notes[pattern[eig]]
+                tick = lh_base_tick + eig * 240
+                harmony_events.append({'tick': tick, 'type': 'note_on', 'note': n, 'velocity': 65, 'channel': 1})
+                harmony_events.append({'tick': tick + 200, 'type': 'note_off', 'note': n, 'velocity': 0, 'channel': 1})
+
+    # Write events to tracks (sort by time)
     melody_events.sort(key=lambda x: x['tick'])
     last_tick = 0
     for e in melody_events:
         delta = max(0, e['tick'] - last_tick)
         track0.append(mido.Message(e['type'], note=e['note'], velocity=e['velocity'], time=delta, channel=0))
         last_tick = e['tick']
-
-    # --- Generate Harmony (Arpeggios) ---
-    # Gentle left hand patterns based on implied harmony
-    harmony_events = []
-    ticks_per_bar = 480 * 4
-    total_bars = int((sorted_ticks[-1] if sorted_ticks else 0) / ticks_per_bar) + 2
-    
-    # Simple Alberti bass or broken chords
-    progression = [
-        [48, 55, 60], # C3
-        [45, 52, 57], # A2
-        [41, 48, 53], # F2
-        [43, 50, 55]  # G2
-    ]
-    
-    for bar in range(total_bars):
-        chord = progression[bar % 4]
-        base_tick = bar * ticks_per_bar
         
-        # Play broken chord pattern: Root - 5th - 3rd - 5th (Eighth notes)
-        pattern_notes = [chord[0], chord[2], chord[1], chord[2]] * 2 # 8 notes for 4/4 bar
-        
-        for i, note in enumerate(pattern_notes):
-            tick = base_tick + i * 240 # 8th note spacing
-            vel = 55 + (5 if i % 4 == 0 else 0) # Accent downbeat slightly
-            
-            harmony_events.append({'tick': tick, 'type': 'note_on', 'note': note, 'velocity': vel, 'channel': 1})
-            harmony_events.append({'tick': tick+220, 'type': 'note_off', 'note': note, 'velocity': 0, 'channel': 1})
-
     harmony_events.sort(key=lambda x: x['tick'])
     last_tick = 0
     for e in harmony_events:
@@ -175,8 +257,6 @@ def generate_full_arrangement(times, values, rhythm_data, filename='chemical_ful
         track1.append(mido.Message(e['type'], note=e['note'], velocity=e['velocity'], time=delta, channel=1))
         last_tick = e['tick']
 
-    # No drums track anymore
-        
     mid.save(filename)
     return filename
 
