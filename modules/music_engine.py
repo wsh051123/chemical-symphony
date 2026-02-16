@@ -8,84 +8,136 @@ except ImportError:
     pygame = None
 
 # Pentatonic Scale: C, D, E, G, A
+# Expanded for smoother transitions and wider range
 PENTATONIC_SCALE = [
-    60, 62, 64, 67, 69,  # C4 - A4
+    36, 38, 40, 43, 45,  # C2 - A2 (Bass)
+    48, 50, 52, 55, 57,  # C3 - A3
+    60, 62, 64, 67, 69,  # C4 - A4 (Middle)
     72, 74, 76, 79, 81,  # C5 - A5
-    84, 86, 88, 91, 93   # C6 - A6
+    84, 86, 88, 91, 93,  # C6 - A6
+    96                   # C7
 ]
 
-def map_value_to_note(value, min_val, max_val):
+def map_value_to_note(value, min_val, max_val, last_note=None):
+    """
+    Maps value to note, with an option to keep it close to the last note 
+    to avoid large melodic jumps (smoothness).
+    """
     if max_val == min_val:
-        return PENTATONIC_SCALE[0]
+        return 60 # Middle C
+        
+    # Normalize 0-1
     normalized = (value - min_val) / (max_val - min_val)
     scale_len = len(PENTATONIC_SCALE)
-    index = int(normalized * (scale_len - 1))
-    index = max(0, min(index, scale_len - 1))
-    return PENTATONIC_SCALE[index]
-
-def generate_track_from_events(events):
-    """
-    Helper to convert absolute tick events to relative delta time messages.
-    events: list of {'tick': int, 'type': str, 'note': int, 'velocity': int}
-    """
-    track = mido.MidiTrack()
-    events.sort(key=lambda x: x['tick'])
     
-    last_tick = 0
-    for e in events:
-        delta = max(0, e['tick'] - last_tick) # Ensure non-negative
-        track.append(mido.Message(e['type'], note=e['note'], velocity=e['velocity'], time=delta))
-        last_tick = e['tick']
-        
-    return track
+    # Base index calculation
+    target_idx = int(normalized * (scale_len - 1))
+    
+    # Smoothing logic: if we have a last note, try to pick the scale note closest to it
+    # but also influenced by the new value.
+    # Actually, simpler approach for "pleasant":
+    # 1. Map value primarily to pitch height
+    # 2. But constrain the range to "singable" range (e.g. C3 to C6)
+    
+    # Let's focus on C4 (60) to C6 (84) for melody
+    # Indices in PENTATONIC_SCALE: 
+    # 60 is index 10. 84 is index 20.
+    # Let's map normalized 0-1 to index 10-22
+    
+    min_idx = 10
+    max_idx = 22
+    mapped_idx = int(min_idx + normalized * (max_idx - min_idx))
+    
+    # Ensure bounds
+    mapped_idx = max(0, min(mapped_idx, scale_len - 1))
+    
+    # If we wanted to smooth jumps, we could average with last index?
+    # For now, let's trust the restricted range to reduce craziness.
+    
+    return PENTATONIC_SCALE[mapped_idx]
 
 def generate_full_arrangement(times, values, rhythm_data, filename='chemical_full_song.mid'):
     """
-    Generate full song with Melody (from data values) and Rhythm (from data peaks).
+    Generate full song with Melody, Arpeggiator/Chords, and enhanced Drums.
     """
     mid = mido.MidiFile(type=1)
     
-    # 1. Setup Timing
+    # 1. Setup Timing & Global Config
     bpm = rhythm_data.get('bpm', 120)
-    # Clamp BPM to be playable
-    if bpm < 40: bpm = 80 # If too slow, double it or set baseline
-    if bpm > 200: bpm = 120 
+    # Clamp BPM
+    if bpm < 60: bpm = 80
+    if bpm > 160: bpm = 120 
     
     mid.ticks_per_beat = 480
     ticks_per_second = (bpm / 60) * 480
     
-    # Tempo track (Track 0 often used for meta events in Type 1)
-    # But mido handles tracks simply. Let's put tempo in the first track.
+    total_duration = times[-1] - times[0] if times else 0
+    start_time = times[0]
+    
+    # --- Track 0: Melody (Electric Piano / Bell) ---
     track0 = mido.MidiTrack()
     mid.tracks.append(track0)
     track0.append(mido.MetaMessage('set_tempo', tempo=mido.bpm2tempo(bpm), time=0))
     track0.append(mido.MetaMessage('track_name', name='Melody', time=0))
-    track0.append(mido.Message('program_change', program=0, time=0, channel=0)) # Piano
+    # Program 4: Electric Piano 1 (Rhodes) - More pleasant than generic piano
+    track0.append(mido.Message('program_change', program=4, time=0, channel=0))
 
-    # 2. Melody Events
+    # --- Track 1: Pad/Chords (Warm Pad) ---
+    track1 = mido.MidiTrack()
+    mid.tracks.append(track1)
+    track1.append(mido.MetaMessage('track_name', name='Pad', time=0))
+    # Program 89: Warm Pad
+    track1.append(mido.Message('program_change', program=89, time=0, channel=1))
+    
+    # --- Track 9: Drums ---
+    track9 = mido.MidiTrack()
+    mid.tracks.append(track9)
+    track9.append(mido.MetaMessage('track_name', name='Drums', time=0))
+    
+    # --- Generate Melody Content ---
     melody_events = []
     min_val = np.min(values)
     max_val = np.max(values)
-    start_time = times[0]
     
-    fixed_duration = 0.25 # seconds per note
+    last_note = None
+    
+    # We want to quantize notes to a grid (e.g. 1/8 notes or 1/16 notes)
+    # to make it rhythmically coherent, instead of chaotic time timestamps.
+    seconds_per_beat = 60 / bpm
+    seconds_per_16th = seconds_per_beat / 4
+    
+    # Quantize input times to nearest 1/16th note grid
+    quantized_notes = {} # {tick: [val1, val2...]}
     
     for i, t in enumerate(times):
-        val = values[i]
-        tick_start = int((t - start_time) * ticks_per_second)
-        tick_end = tick_start + int(fixed_duration * ticks_per_second)
+        rel_time = t - start_time
+        # Round to nearest 16th
+        grid_slot = round(rel_time / seconds_per_16th)
+        tick = int(grid_slot * seconds_per_beat * 480 / 4)
         
-        note = map_value_to_note(val, min_val, max_val)
-        vel = 60 + int((val - min_val)/(max_val - min_val + 1e-6) * 40)
+        if tick not in quantized_notes:
+            quantized_notes[tick] = []
+        quantized_notes[tick].append(values[i])
         
-        melody_events.append({'tick': tick_start, 'type': 'note_on', 'note': note, 'velocity': vel})
-        melody_events.append({'tick': tick_end, 'type': 'note_off', 'note': note, 'velocity': 0})
-        
-    # Add melody events to track 0 (after initial meta events)
-    # Actually, let's just make a new list including the meta stuff or handle delta differently.
-    # The `generate_track_from_events` starts at 0.
-    # So we can just append the note messages to track0.
+    # Create melody from quantized buckets (averaging values in same bucket)
+    sorted_ticks = sorted(quantized_notes.keys())
     
+    for tick in sorted_ticks:
+        vals = quantized_notes[tick]
+        avg_val = sum(vals) / len(vals)
+        
+        note = map_value_to_note(avg_val, min_val, max_val, last_note)
+        # Velocity dynamic based on value (higher = louder)
+        vel = 70 + int((avg_val - min_val)/(max_val - min_val + 1e-6) * 30)
+        
+        # Note duration: 1/8 note usually
+        dur_tick = 240 # 480 is quarter note
+        
+        melody_events.append({'tick': tick, 'type': 'note_on', 'note': note, 'velocity': vel, 'channel': 0})
+        melody_events.append({'tick': tick + dur_tick, 'type': 'note_off', 'note': note, 'velocity': 0, 'channel': 0})
+        last_note = note
+    
+    # Write Melody Track
     melody_events.sort(key=lambda x: x['tick'])
     last_tick = 0
     for e in melody_events:
@@ -93,40 +145,83 @@ def generate_full_arrangement(times, values, rhythm_data, filename='chemical_ful
         track0.append(mido.Message(e['type'], note=e['note'], velocity=e['velocity'], time=delta, channel=0))
         last_tick = e['tick']
 
-    # 3. Rhythm Track
-    track1 = mido.MidiTrack()
-    mid.tracks.append(track1)
-    track1.append(mido.MetaMessage('track_name', name='Drums', time=0))
-    # Channel 9 (10th channel) is drums.
+    # --- Generate Pad/Background ---
+    # Create a simple chord progression C -> Am -> F -> G loop every 4 bars?
+    # Or just a drone C major chord that shifts based on data trend?
+    # Let's do a simple long drone chord (C Major / A Minor ambiguous)
+    pad_events = []
+    # Every 4 beats (1 bar), play a chord
+    ticks_per_bar = 480 * 4
+    total_bars = int((sorted_ticks[-1] if sorted_ticks else 0) / ticks_per_bar) + 2
     
-    rhythm_events = []
-    onsets = rhythm_data.get('onsets', [])
+    # Chord progression: Cmaj7 - Am7 - Fmaj7 - G7
+    progression = [
+        [48, 55, 60, 64], # C3, G3, C4, E4
+        [45, 52, 57, 60], # A2, E3, A3, C4
+        [41, 48, 53, 57], # F2, C3, F3, A3
+        [43, 50, 55, 59]  # G2, D3, G3, B3
+    ]
     
-    # Add steady hi-hat
-    total_duration = times[-1] - start_time + 2.0
-    beat_interval = 60 / bpm
-    current_t = 0
-    while current_t < total_duration:
-        tick = int(current_t * ticks_per_second)
-        rhythm_events.append({'tick': tick, 'type': 'note_on', 'note': 42, 'velocity': 50}) # Closed Hi-hat
-        rhythm_events.append({'tick': tick + 50, 'type': 'note_off', 'note': 42, 'velocity': 0})
-        current_t += beat_interval
-
-    # Add kicks on peaks
-    for t in onsets:
-        tick = int((t - start_time) * ticks_per_second)
-        # Kick (36) + Crash (49)
-        rhythm_events.append({'tick': tick, 'type': 'note_on', 'note': 36, 'velocity': 110})
-        rhythm_events.append({'tick': tick + 100, 'type': 'note_off', 'note': 36, 'velocity': 0})
-        rhythm_events.append({'tick': tick, 'type': 'note_on', 'note': 49, 'velocity': 90}) 
-        rhythm_events.append({'tick': tick + 100, 'type': 'note_off', 'note': 49, 'velocity': 0})
-
-    # Generate Drum Track Content
-    rhythm_events.sort(key=lambda x: x['tick'])
+    for bar in range(total_bars):
+        chord = progression[bar % 4]
+        tick_start = bar * ticks_per_bar
+        tick_end = tick_start + ticks_per_bar - 10 # slightly shorter than bar
+        
+        for note in chord:
+            pad_events.append({'tick': tick_start, 'type': 'note_on', 'note': note, 'velocity': 50, 'channel': 1})
+            pad_events.append({'tick': tick_end, 'type': 'note_off', 'note': note, 'velocity': 0, 'channel': 1})
+            
+    pad_events.sort(key=lambda x: x['tick'])
     last_tick = 0
-    for e in rhythm_events:
+    for e in pad_events:
         delta = max(0, e['tick'] - last_tick)
-        track1.append(mido.Message(e['type'], note=e['note'], velocity=e['velocity'], time=delta, channel=9))
+        track1.append(mido.Message(e['type'], note=e['note'], velocity=e['velocity'], time=delta, channel=1))
+        last_tick = e['tick']
+
+    # --- Generate Drums ---
+    # Standard Loop + Peak Accents
+    drum_events = []
+    total_quarters = int((sorted_ticks[-1] if sorted_ticks else 0) / 480) + 4
+    
+    # Basic Beat: Kick on 1, 3; Snare on 2, 4; Hi-hat 8ths
+    for q in range(total_quarters):
+        tick = q * 480
+        
+        # Hi-hat (42) every quarter (could be 8th)
+        drum_events.append({'tick': tick, 'type': 'note_on', 'note': 42, 'velocity': 40, 'channel': 9})
+        drum_events.append({'tick': tick+100, 'type': 'note_off', 'note': 42, 'velocity': 0, 'channel': 9})
+        
+        # Kick (35) on beat 1 and 3 (0, 2 mod 4)
+        if q % 4 in [0, 2]:
+             drum_events.append({'tick': tick, 'type': 'note_on', 'note': 35, 'velocity': 90, 'channel': 9})
+             drum_events.append({'tick': tick+100, 'type': 'note_off', 'note': 35, 'velocity': 0, 'channel': 9})
+             
+        # Snare (38) on beat 2 and 4 (1, 3 mod 4)
+        if q % 4 in [1, 3]:
+             drum_events.append({'tick': tick, 'type': 'note_on', 'note': 38, 'velocity': 80, 'channel': 9})
+             drum_events.append({'tick': tick+100, 'type': 'note_off', 'note': 38, 'velocity': 0, 'channel': 9})
+
+    # Accents from Data Peaks
+    onsets = rhythm_data.get('onsets', [])
+    for t in onsets:
+        # Quantize peak to nearest 1/8 note
+        rel_time = t - start_time
+        grid_slot = round(rel_time / (seconds_per_beat/2))
+        tick = int(grid_slot * (480/2))
+        
+        # Crash Cymbal (49)
+        drum_events.append({'tick': tick, 'type': 'note_on', 'note': 49, 'velocity': 100, 'channel': 9})
+        drum_events.append({'tick': tick+200, 'type': 'note_off', 'note': 49, 'velocity': 0, 'channel': 9})
+        
+        # Extra Kick
+        drum_events.append({'tick': tick, 'type': 'note_on', 'note': 36, 'velocity': 110, 'channel': 9})
+        drum_events.append({'tick': tick+100, 'type': 'note_off', 'note': 36, 'velocity': 0, 'channel': 9})
+
+    drum_events.sort(key=lambda x: x['tick'])
+    last_tick = 0
+    for e in drum_events:
+        delta = max(0, e['tick'] - last_tick)
+        track9.append(mido.Message(e['type'], note=e['note'], velocity=e['velocity'], time=delta, channel=9))
         last_tick = e['tick']
         
     mid.save(filename)
