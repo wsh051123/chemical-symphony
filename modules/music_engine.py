@@ -7,45 +7,33 @@ try:
 except ImportError:
     pygame = None
 
-# Pentatonic Scale: C, D, E, G, A
 # Expanded for smoother transitions and wider range
-PENTATONIC_SCALE = [
-    36, 38, 40, 43, 45,  # C2 - A2 (Bass)
-    48, 50, 52, 55, 57,  # C3 - A3
-    60, 62, 64, 67, 69,  # C4 - A4 (Middle)
-    72, 74, 76, 79, 81,  # C5 - A5
-    84, 86, 88, 91, 93,  # C6 - A6
-    96                   # C7
+# Use C Major Scale (Ionian) for a brighter, more "classical" feel
+# C, D, E, F, G, A, B
+C_MAJOR_SCALE = [
+    48, 50, 52, 53, 55, 57, 59,  # C3 - B3 (Low-Mid)
+    60, 62, 64, 65, 67, 69, 71,  # C4 - B4 (Middle)
+    72, 74, 76, 77, 79, 81, 83,  # C5 - B5 (High)
+    84, 86, 88, 89, 91, 93, 95,  # C6 - B6 (Very High - "Crisp")
+    96, 98, 100, 101, 103, 105, 107 # C7 - B7 (Brilliant)
 ]
 
 def map_value_to_note(value, min_val, max_val, last_note=None):
     """
-    Maps value to note, with an option to keep it close to the last note 
-    to avoid large melodic jumps (smoothness).
+    Maps value to note, favoring higher registers for a crisp sound.
     """
     if max_val == min_val:
-        return 60 # Middle C
+        return 72 # C5
         
     # Normalize 0-1
     normalized = (value - min_val) / (max_val - min_val)
-    scale_len = len(PENTATONIC_SCALE)
+    scale_len = len(C_MAJOR_SCALE)
     
-    # Base index calculation
-    target_idx = int(normalized * (scale_len - 1))
-    
-    # Smoothing logic: if we have a last note, try to pick the scale note closest to it
-    # but also influenced by the new value.
-    # Actually, simpler approach for "pleasant":
-    # 1. Map value primarily to pitch height
-    # 2. But constrain the range to "singable" range (e.g. C3 to C6)
-    
-    # Let's focus on C4 (60) to C6 (84) for melody
-    # Indices in PENTATONIC_SCALE: 
-    # 60 is index 10. 84 is index 20.
-    # Let's map normalized 0-1 to index 10-22
-    
+    # Focus on Middle-High to High registers for "Likje Lang Lang" crispness
+    # Range indices: Let's use roughly index 12 (G4) to 30 (E7)
     min_idx = 10
-    max_idx = 22
+    max_idx = scale_len - 5 # Leave slight headroom
+    
     mapped_idx = int(min_idx + normalized * (max_idx - min_idx))
     
     # Ensure bounds
@@ -54,7 +42,7 @@ def map_value_to_note(value, min_val, max_val, last_note=None):
     # If we wanted to smooth jumps, we could average with last index?
     # For now, let's trust the restricted range to reduce craziness.
     
-    return PENTATONIC_SCALE[mapped_idx]
+    return C_MAJOR_SCALE[mapped_idx]
 
 def generate_full_arrangement(times, values, rhythm_data, filename='chemical_full_song.mid'):
     """
@@ -67,7 +55,8 @@ def generate_full_arrangement(times, values, rhythm_data, filename='chemical_ful
     bpm = rhythm_data.get('bpm', 120)
     # Target a relaxed Adagio to Andante range (60-90 BPM) for base
     # Logic: if data is volatile, it will speed up naturally via note density, no need for high base BPM.
-    target_bpm = 80
+    # Update: Set to 96 BPM for a brighter, more lively feel
+    target_bpm = 96
     
     mid.ticks_per_beat = 480
     ticks_per_second = (target_bpm / 60) * 480
@@ -160,7 +149,8 @@ def generate_full_arrangement(times, values, rhythm_data, filename='chemical_ful
             style = 'calm'
             
         # Refine style by height: High value = louder, brighter
-        base_velocity = 60 + int(avg_height * 30)
+        # Increase base velocity for "crisp" piano sound (Lang Lang style: clear articulation)
+        base_velocity = 80 + int(avg_height * 35) # Range approx 80 - 115
         
         # --- Generate Melody for this Bar ---
         total_beats = 4
@@ -168,8 +158,14 @@ def generate_full_arrangement(times, values, rhythm_data, filename='chemical_ful
         ticks_per_note = int(480 / notes_per_beat)
         
         # To avoid "dragging", ensure note duration is shorter than step
-        # Staccato for rapid, Legato for calm
-        gate = 0.95 if style == 'calm' else 0.8
+        # Shorter staccato for rapid/flowing to emulate crisp finger work
+        if style == 'rapid':
+            gate = 0.6 # Very crisp staccato
+        elif style == 'flowing':
+            gate = 0.75 # Non-legato
+        else:
+            gate = 0.9 # Legato for slow parts
+            
         note_dur = int(ticks_per_note * gate)
         
         for i in range(notes_in_bar):
@@ -187,14 +183,18 @@ def generate_full_arrangement(times, values, rhythm_data, filename='chemical_ful
             val = val_arr[idx]
             
             # Map Pitch
-            # If calm, stick closer to chord tones? Or simple pentatonic.
-            # Let's stick to pentatonic but maybe shift octave based on height
+            # Using new C Major scale
             note = map_value_to_note(val, min_val, max_val, last_note)
+            
+            # Add micro-dynamics: accent the first note of beat
+            current_velocity = base_velocity
+            if i % notes_per_beat == 0:
+                current_velocity += 10 # Accent
             
             # Add event
             melody_events.append({
                 'tick': abs_tick_start, 
-                'type': 'note_on', 'note': note, 'velocity': base_velocity, 'channel': 0
+                'type': 'note_on', 'note': note, 'velocity': min(127, current_velocity), 'channel': 0
             })
             melody_events.append({
                 'tick': abs_tick_start + note_dur, 
@@ -204,43 +204,61 @@ def generate_full_arrangement(times, values, rhythm_data, filename='chemical_ful
             last_note = note
 
         # --- Generate Left Hand Accompaniment for this Bar ---
+        # Shift root up an octave if it's too muddy (below C2=36 is muddy)
+        # Current roots: 48, 45, 41, 43 (C2..G1). Pretty low.
+        # Let's shift +12 to C3..G2 for clarity, or keep as bass but ensure velocity is controlled.
+        # Actually, standard piano bass is around C2-C3.
+        
         root = chord_roots[bar % progression_len]
         # Construct triad: Root, 3rd (approx +4), 5th (+7)
-        chord_notes = [root, root+4, root+7] # Major-ish approximation
-        # Adjust for minor chords (Am -> root+3, Dm -> root+3) 
-        if bar % 4 == 1: # Am
-             chord_notes = [root, root+3, root+7]
-             
+        # Major C (C, E, G), Am (A, C, E), F (F, A, C), G (G, B, D)
+        if bar % 4 == 0: # C Major
+            chord_notes = [root, root+4, root+7]
+        elif bar % 4 == 1: # A Minor
+            chord_notes = [root, root+3, root+7]
+        elif bar % 4 == 2: # F Major
+            chord_notes = [root, root+4, root+7]
+        else: # G Major
+            chord_notes = [root, root+4, root+7]
+
         lh_base_tick = bar * 480 * 4
         
+        # Left hand velocity - softer than melody
+        lh_velocity = 60 
+        
         if style == 'calm':
-            # Block chords or half notes (Slow, sustained)
-            # Play Root on beat 1, 5th on beat 3
-            harmony_events.append({'tick': lh_base_tick, 'type': 'note_on', 'note': root - 12, 'velocity': 50, 'channel': 1})
-            harmony_events.append({'tick': lh_base_tick + 900, 'type': 'note_off', 'note': root - 12, 'velocity': 0, 'channel': 1})
-            
-            harmony_events.append({'tick': lh_base_tick + 960, 'type': 'note_on', 'note': chord_notes[2] - 12, 'velocity': 45, 'channel': 1})
-            harmony_events.append({'tick': lh_base_tick + 1800, 'type': 'note_off', 'note': chord_notes[2] - 12, 'velocity': 0, 'channel': 1})
+            # Broken chord waltz or arpeggio (Quarter notes)
+            # Root - 5th - 3rd - 5th
+            for beat in range(4):
+                if beat == 0: n = chord_notes[0] # Root
+                elif beat == 1: n = chord_notes[2] # 5th
+                elif beat == 2: n = chord_notes[1] # 3rd
+                else: n = chord_notes[2] # 5th
+                
+                tick = lh_base_tick + beat * 480
+                harmony_events.append({'tick': tick, 'type': 'note_on', 'note': n, 'velocity': lh_velocity - 10, 'channel': 1})
+                harmony_events.append({'tick': tick + 400, 'type': 'note_off', 'note': n, 'velocity': 0, 'channel': 1})
             
         elif style == 'flowing':
-            # Broken chords (Quarter notes)
-            # Pattern: Root - 5th - 3rd - 5th
-            pattern = [0, 2, 1, 2]
-            for beat in range(4):
-                n = chord_notes[pattern[beat]]
-                tick = lh_base_tick + beat * 480
-                harmony_events.append({'tick': tick, 'type': 'note_on', 'note': n, 'velocity': 55, 'channel': 1})
-                harmony_events.append({'tick': tick + 400, 'type': 'note_off', 'note': n, 'velocity': 0, 'channel': 1})
-                
-        else: # rapid
-            # Alberti Bass (Eighth notes) - Energetic
+            # Alberti Bass (Eighth notes) - "Mozart Style"
             # Pattern: Root - 5th - 3rd - 5th (x2 per bar)
             pattern = [0, 2, 1, 2] * 2
             for eig in range(8):
                 n = chord_notes[pattern[eig]]
+                # Shift octave up for clarity if needed, but Alberti bass is usually close position
                 tick = lh_base_tick + eig * 240
-                harmony_events.append({'tick': tick, 'type': 'note_on', 'note': n, 'velocity': 65, 'channel': 1})
-                harmony_events.append({'tick': tick + 200, 'type': 'note_off', 'note': n, 'velocity': 0, 'channel': 1})
+                harmony_events.append({'tick': tick, 'type': 'note_on', 'note': n + 12, 'velocity': lh_velocity, 'channel': 1})
+                harmony_events.append({'tick': tick + 200, 'type': 'note_off', 'note': n + 12, 'velocity': 0, 'channel': 1})
+                
+        else: # rapid
+            # Fast Arpeggios or Tremolo (Sixteenth notes)
+            # Root - 3rd - 5th - 3rd (x4 per bar)
+            pattern = [0, 1, 2, 1] * 4
+            for six in range(16):
+                n = chord_notes[pattern[six]]
+                tick = lh_base_tick + six * 120
+                harmony_events.append({'tick': tick, 'type': 'note_on', 'note': n + 12, 'velocity': lh_velocity + 10, 'channel': 1})
+                harmony_events.append({'tick': tick + 100, 'type': 'note_off', 'note': n + 12, 'velocity': 0, 'channel': 1})
 
     # Write events to tracks (sort by time)
     melody_events.sort(key=lambda x: x['tick'])

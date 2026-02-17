@@ -81,14 +81,14 @@ with st.sidebar:
         
     st.markdown("---")
     st.info("💡 **提示**: \n上传数据后，程序会自动识别列。您可以在主界面微调映射关系。")
-    st.markdown("Created with ❤️ by Chemical Symphony Team")
+    st.markdown("thank you for using Chemical Symphony!")
 
 # --- Main Logic ---
 
 # Helper function to clear previous music if data changes
 def clear_music_cache():
     st.session_state.music_data = None
-
+s
 if uploaded_file is not None:
     # --- 1. Data Loading Section ---
     st.header("1. 数据加载与预览", divider="rainbow")
