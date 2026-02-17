@@ -75,13 +75,13 @@ def load_chemical_data(file_input):
     """
     Legacy support
     """
-    df = load_as_dataframe(file_input)
-    if df is not None:
-        # Default to first two columns
-        if len(df.columns) >= 2:
-            return clean_data(df, df.columns[0], df.columns[1])
-    return [], []
-        return times, values
+    try:
+        df = load_as_dataframe(file_input)
+        if df is not None:
+            # Default to first two columns
+            if len(df.columns) >= 2:
+                return clean_data(df, df.columns[0], df.columns[1])
+        return [], []
 
     except Exception as e:
         print(f"读取文件出错: {e}")
