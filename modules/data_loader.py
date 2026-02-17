@@ -1,55 +1,86 @@
 # 数据加载模块
 # 负责读取各种格式的化学数据文件
 
-import csv
+import pandas as pd
+import io
 
+def load_as_dataframe(file_input):
+    """
+    通用读取函数，尝试将上传文件解析为 DataFrame
+    支持 CSV, Excel (需安装openpyxl), TXT (tab分隔)
+    """
+    df = None
+    try:
+        # 如果是字符串路径
+        if isinstance(file_input, str):
+            if file_input.endswith('.csv') or file_input.endswith('.txt'):
+                df = pd.read_csv(file_input)
+            elif file_input.endswith('.xlsx') or file_input.endswith('.xls'):
+                df = pd.read_excel(file_input)
+        # 如果是文件对象 (Streamlit UploadedFile)
+        else:
+            # 尝试常见的分隔符
+            try:
+                # 默认尝试逗号
+                file_input.seek(0)
+                df = pd.read_csv(file_input)
+            except:
+                # 尝试制表符 (某些仪器导出的 .txt)
+                try:
+                    file_input.seek(0)
+                    df = pd.read_csv(file_input, sep='\t')
+                except:
+                    # 尝试 Excel
+                    try:
+                        file_input.seek(0)
+                        df = pd.read_excel(file_input)
+                    except:
+                        return None
+    except Exception as e:
+        print(f"解析文件失败: {e}")
+        return None
+        
+    return df
+
+def clean_data(df, time_col, value_col):
+    """
+    从 DataFrame 中提取并清洗时间与数值列
+    :return: (times, values) lists
+    """
+    if df is None or time_col not in df.columns or value_col not in df.columns:
+        return [], []
+        
+    try:
+        # 提取列
+        data = df[[time_col, value_col]].dropna()
+        
+        # 转换为数值类型 (处理可能的字符串噪音)
+        data[time_col] = pd.to_numeric(data[time_col], errors='coerce')
+        data[value_col] = pd.to_numeric(data[value_col], errors='coerce')
+        
+        # 再次去除转换失败产生的 NaN
+        data = data.dropna()
+        
+        # 按时间排序
+        data = data.sort_values(by=time_col)
+        
+        return data[time_col].tolist(), data[value_col].tolist()
+        
+    except Exception as e:
+        print(f"数据清洗失败: {e}")
+        return [], []
+
+# 旧函数改为如果不使用UI选择时的默认回退 (保留兼容性)
 def load_chemical_data(file_input):
     """
-    读取化学数据文件 (CSV格式)
-    :param file_input: 文件路径 (str) 或 文件对象 (TextIO)
-    :return: (times, values)
+    Legacy support
     """
-    print(f"正在加载数据...")
-    
-    times = []
-    values = []
-    
-    try:
-        # 判断输入是路径还是文件对象
-        if isinstance(file_input, str):
-            f = open(file_input, 'r', encoding='utf-8')
-            should_close = True
-        else:
-            f = file_input
-            should_close = False
-
-        try:
-            reader = csv.reader(f)
-            # 尝试读取标题行，如果没有数据可能会报错
-            try:
-                header = next(reader, None)
-            except Exception:
-                pass
-            
-            for row in reader:
-                if row and len(row) >= 2:  # 确保有足够列
-                    try:
-                        t = float(row[0])
-                        v = float(row[1])
-                        times.append(t)
-                        values.append(v)
-                    except ValueError:
-                        continue # 跳过无法转换的行
-        finally:
-            if should_close:
-                f.close()
-                    
-        print(f"成功加载 {len(times)} 条数据点")
-        return times, values
-
-    except Exception as e:
-        print(f"加载数据出错: {e}")
-        return [], []
+    df = load_as_dataframe(file_input)
+    if df is not None:
+        # Default to first two columns
+        if len(df.columns) >= 2:
+            return clean_data(df, df.columns[0], df.columns[1])
+    return [], []
         return times, values
 
     except Exception as e:

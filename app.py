@@ -1,11 +1,11 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 import io
 import os
 import tempfile
 import sys
+import time
 
 # Ensure modules can be imported
 sys.path.append(os.getcwd())
@@ -13,276 +13,313 @@ sys.path.append(os.getcwd())
 import modules.data_loader as data_loader
 import modules.analyzer as analyzer
 import modules.music_engine as music_engine
+import modules.chart_sync as chart_sync
 
 # --- Setup Page ---
-st.set_page_config(page_title="化学交响乐 (Chemical Symphony)", layout="wide")
+st.set_page_config(
+    page_title="化学交响乐 (Chemical Symphony)", 
+    page_icon="🧪",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom CSS for better UI
+st.markdown("""
+<style>
+    .main .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
+    h1 {
+        color: #2c3e50;
+        text-align: center;
+        margin-bottom: 30px !important;
+    }
+    .stButton>button {
+        width: 100%;
+        border-radius: 8px;
+        height: 3em;
+        font-weight: bold;
+    }
+    .metric-card {
+        background-color: #f8f9fa;
+        padding: 15px;
+        border-radius: 8px;
+        border: 1px solid #e0e0e0;
+        text-align: center;
+    }
+    .stAlert {
+        border-radius: 8px;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 st.title("🧪 化学交响乐生成器")
-st.markdown("""
-将您的化学实验数据（如吸光度随时间变化的曲线）转化为动听的交响乐。
-- **旋律**: 跟随数据趋势起伏（五声调式）
-- **节奏**: 在波峰处自动生成鼓点
-""")
+st.markdown("<p style='text-align: center; color: #7f8c8d; margin-bottom: 40px;'>将您的化学实验数据（如吸光度曲线）转化为动听的交响乐章</p>", unsafe_allow_html=True)
+
+# Initialize Session State
+if 'process_data' not in st.session_state:
+    st.session_state.process_data = None # {'times': [], 'values': []}
+if 'analysis_results' not in st.session_state:
+    st.session_state.analysis_results = None
+if 'music_data' not in st.session_state:
+    st.session_state.music_data = None # {'midi': b'', 'wav': b'', 'filename': ''}
 
 # --- Sidebar: Configuration ---
 with st.sidebar:
-    st.header("1. 上传数据")
-    uploaded_file = st.file_uploader("上传数据文件 (CSV/Excel)", type=["csv", "xlsx", "txt", "xls"])
+    st.image("https://img.icons8.com/color/96/000000/test-tube.png", width=64)
+    st.title("控制台")
     
+    with st.expander("📂 1. 数据源", expanded=True):
+        uploaded_file = st.file_uploader("上传文件 (CSV/Excel/Txt)", type=["csv", "xlsx", "txt", "xls"], help="支持包含时间/波长和数值列的标准表格数据")
+        
     st.markdown("---")
-    st.header("2. 音乐设置")
-    bpm_override = st.number_input("强制 BPM (可选)", min_value=0, max_value=200, value=0, help="0 表示自动计算")
+    
+    with st.expander("⚙️ 2. 音乐参数", expanded=True):
+        bpm_override = st.number_input("BPM (速度)", min_value=0, max_value=240, value=0, help="设为 0 则根据数据特征自动计算")
+        target_duration = st.slider("目标时长 (秒)", 15, 120, 60, help="将数据自动缩放至约这个时长的音乐")
+        
+    st.markdown("---")
+    st.info("💡 **提示**: \n上传数据后，程序会自动识别列。您可以在主界面微调映射关系。")
+    st.markdown("Created with ❤️ by Chemical Symphony Team")
 
 # --- Main Logic ---
+
+# Helper function to clear previous music if data changes
+def clear_music_cache():
+    st.session_state.music_data = None
+
 if uploaded_file is not None:
-    # 1. Load Data Frame
+    # --- 1. Data Loading Section ---
+    st.header("1. 数据加载与预览", divider="rainbow")
+    
+    col_load1, col_load2 = st.columns([1, 2])
+    
+    df = None
     try:
-        # 尝试读取文件
-        df = None
+        # Load logic
         file_ext = uploaded_file.name.split('.')[-1].lower()
-        
         if file_ext == 'csv':
-            # 尝试不同的分隔符
             try:
                 uploaded_file.seek(0)
                 df = pd.read_csv(uploaded_file)
             except:
                 uploaded_file.seek(0)
-                df = pd.read_csv(uploaded_file, sep=';') # 尝试分号
+                df = pd.read_csv(uploaded_file, sep=';')
         elif file_ext in ['xls', 'xlsx']:
             df = pd.read_excel(uploaded_file)
         elif file_ext == 'txt':
-            # 尝试制表符
             try:
                 uploaded_file.seek(0)
                 df = pd.read_csv(uploaded_file, sep='\t')
             except:
-                # 尝试逗号
                 uploaded_file.seek(0)
                 df = pd.read_csv(uploaded_file)
-        
-        if df is None:
-            st.error("无法识别文件格式，请确保是标准的 CSV 或 Excel 文件。")
+
+        if df is not None:
+            # Check for changes to reset downstream cache
+            if 'last_uploaded_file' not in st.session_state or st.session_state.last_uploaded_file != uploaded_file.name:
+                st.session_state.last_uploaded_file = uploaded_file.name
+                clear_music_cache()
+                st.session_state.process_data = None
+
+            with col_load1:
+                st.write("数据预览 (前5行):")
+                st.dataframe(df.head(), height=200, use_container_width=True)
+            
+            with col_load2:
+                # Column Selection
+                cols = df.columns.tolist()
+                
+                # Auto-detect logic
+                x_idx, y_idx = 0, 1 if len(cols) > 1 else 0
+                lower_cols = [str(c).lower() for c in cols]
+                
+                for i, c in enumerate(lower_cols):
+                    if any(k in c for k in ['time', 'date', 'sec', 'min', 'wavelength', 'nm', 'index']):
+                        x_idx = i
+                        break
+                for i, c in enumerate(lower_cols):
+                    if i == x_idx: continue
+                    if any(k in c for k in ['val', 'abs', 'int', 'signal']):
+                        y_idx = i
+                        break
+
+                c1, c2 = st.columns(2)
+                with c1:
+                    time_col = st.selectbox("X轴 (时间序列)", cols, index=x_idx, on_change=clear_music_cache)
+                with c2:
+                    default_y = y_idx if y_idx < len(cols) else 0
+                    value_col = st.selectbox("Y轴 (数值信号)", cols, index=default_y, on_change=clear_music_cache)
+
+    except Exception as e:
+        st.error(f"文件读取失败: {e}")
+        st.stop()
+
+    # --- 2. Data Processing & Visualization ---
+    if df is not None:
+        # Process Data Logic
+        try:
+            # Handle single column case
+            temp_df = df.copy()
+            if time_col == value_col and len(cols) == 1:
+                temp_df['Index_Gen'] = range(len(temp_df))
+                time_col = 'Index_Gen'
+            
+            # Numeric conversion
+            temp_df[time_col] = pd.to_numeric(temp_df[time_col], errors='coerce')
+            temp_df[value_col] = pd.to_numeric(temp_df[value_col], errors='coerce')
+            temp_df = temp_df.dropna(subset=[time_col, value_col]).sort_values(by=time_col)
+            
+            times_raw = temp_df[time_col].tolist()
+            values_raw = temp_df[value_col].tolist()
+            
+            if len(values_raw) > 5:
+                # Time Scaling Logic
+                min_t = times_raw[0]
+                x_span = times_raw[-1] - times_raw[0]
+                
+                # Check for scaling need
+                avg_gap = np.mean(np.diff(times_raw))
+                scale_factor = 1.0
+                
+                if x_span > 0:
+                    scale_factor = float(target_duration) / x_span
+                
+                # Normalize time to start at 0
+                times_processed = [(t - min_t) * scale_factor for t in times_raw]
+                values_processed = values_raw # Values usually don't need scaling, MIDI engine handles mapping
+                
+                st.session_state.process_data = {
+                    'times': times_processed,
+                    'values': values_processed,
+                    'raw_x_name': time_col
+                }
+                
+                # Visualization
+                st.header("2. 数据分析与可视化", divider="rainbow")
+                
+                # Analyze
+                peaks = analyzer.find_peaks_in_data(times_processed, values_processed)
+                rhythm = analyzer.calculate_rhythm_pattern(peaks)
+                st.session_state.analysis_results = {'peaks': peaks, 'rhythm': rhythm}
+                
+                # Layout for charts
+                tab1, tab2 = st.tabs(["📊 数据概览", "📈 峰值检测"])
+                
+                with tab1:
+                    import plotly.graph_objects as go
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(x=times_processed, y=values_processed, mode='lines', name='Signal', line=dict(color='#3498db', width=2)))
+                    fig.update_layout(title="处理后的数据曲线 (已适配时间轴)", xaxis_title="播放时间 (秒)", yaxis_title="信号强度", height=300, margin=dict(t=30, b=0))
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                with tab2:
+                    col_res1, col_res2, col_res3 = st.columns(3)
+                    col_res1.metric("数据点总数", len(times_processed))
+                    col_res2.metric("识别到的关键节拍 (峰值)", len(peaks))
+                    bpm_val = rhythm.get('bpm', 0)
+                    col_res3.metric("推荐 BPM", f"{bpm_val:.1f}")
+                    
+            else:
+                st.warning("有效数据点过少，无法生成音乐。")
+                st.stop()
+                
+        except Exception as e:
+            st.error(f"数据处理出错: {e}")
             st.stop()
-            
-    except Exception as e:
-        st.error(f"读取文件出错: {e}")
-        st.stop()
 
-    # 2. Automatic Column Detection
-    # Strategy: 
-    # - Assume 1st column is X (Time/Index/Wavelength)
-    # - Assume 2nd column is Y (Value/Intensity)
-    # - If only 1 column, use Index as X
-    
-    st.info(f"已加载文件: {uploaded_file.name}")
-    
-    cols = df.columns.tolist()
-    if len(cols) < 1:
-        st.error("文件为空或无有效列")
-        st.stop()
+    # --- 3. Music Generation ---
+    if st.session_state.process_data:
+        st.header("3. 音乐生成与播放", divider="rainbow")
         
-    # Default selection
-    x_col_index = 0
-    y_col_index = 1 if len(cols) > 1 else 0
-    
-    # Simple heuristic to find "Time" or "Wavelength" if present, otherwise stick to defaults
-    lower_cols = [c.lower() for c in cols]
-    
-    # Try to find a better X
-    for i, c in enumerate(lower_cols):
-        if any(key in c for key in ['time', 'date', 'sec', 'min', 'hour', 'wavelength', 'nm', 'index']):
-            x_col_index = i
-            break
-            
-    # Try to find a better Y (if not same as X)
-    for i, c in enumerate(lower_cols):
-        if i == x_col_index: continue
-        if any(key in c for key in ['val', 'abs', 'int', 'signal', 'od']):
-            y_col_index = i
-            break
-            
-    # Display the automatic selection
-    with st.expander("查看/修改 数据列映射", expanded=False):
-        col1, col2 = st.columns(2)
-        with col1:
-            time_col = st.selectbox("X轴 (时间/序列)", cols, index=x_col_index)
-        with col2:
-            # If we only have 1 column, we might need a dummy Y or use the same one? 
-            # Actually if 1 col, usually it's Y and X is index.
-            # But here let's allow user to pick.
-            default_y_idx = y_col_index if len(cols) > 1 else 0
-            value_col = st.selectbox("Y轴 (数值/信号)", cols, index=default_y_idx)
+        times = st.session_state.process_data['times']
+        values = st.session_state.process_data['values']
+        rhythm = st.session_state.analysis_results['rhythm']
+        
+        # Generator Controls
+        c_gen1, c_gen2 = st.columns([1, 4])
+        with c_gen1:
+            generate_btn = st.button("🎵 开始谱曲", type="primary", use_container_width=True)
+        with c_gen2:
+            st.caption("点击按钮将数据转化为 MIDI 和 WAV 音频。生成过程可能需要几秒钟。")
 
-    # If only 1 column exists and it's selected for both, handle gracefully
-    if time_col == value_col and len(cols) == 1:
-        # Create a dummy index column
-        df['Index_Generated'] = range(len(df))
-        time_col = 'Index_Generated'
-        # value_col remains the single column
-        
-    st.markdown(f"**当前使用:** X={time_col}, Y={value_col}")
-        
-    # 3. Process Data
-    try:
-        # Re-verify columns exist (in case index was generated)
-        if time_col not in df.columns:
-            # We already handled 'Index_Generated', so this is just failsafe
-            pass
-            
-        df_clean = df.copy()
-        
-        # Ensure numeric
-        df_clean[time_col] = pd.to_numeric(df_clean[time_col], errors='coerce')
-        df_clean[value_col] = pd.to_numeric(df_clean[value_col], errors='coerce')
-        
-        # Drop rows where X or Y is NaN
-        original_len = len(df_clean)
-        df_clean = df_clean.dropna(subset=[time_col, value_col])
-        
-        # Sort by X
-        df_clean = df_clean.sort_values(by=time_col)
-        
-        times = df_clean[time_col].tolist()
-        values = df_clean[value_col].tolist()
-        
-        if len(values) > 10:
-            # 自动调整“时间”轴以适应音乐时长
-            # 无论X轴是什么（时间、波长、序号），我们都将其映射为音乐播放的时间
-            # 假设一个合理的总时长：例如 30秒 - 180秒
-            
-            # 修正变量作用域问题
-            min_t = times[0]
-            x_span = times[-1] - times[0]
-            
-            # 使用 numpy 快速计算间隔
-            import numpy as np
-            if len(times) > 1:
-                intervals = np.diff(times)
-                avg_val = np.mean(intervals)
-                
-                # 如果间隔过大(如波长) 或 过小(微秒)
-                # 设定目标: 整个乐曲长度约 30~60秒
-                target_duration = 45.0
-                
-                if x_span == 0:
-                   scale = 1.0 # 单点数据
-                else:
-                   scale = target_duration / x_span
-                
-                # 提示用户
-                if scale != 1.0 and (avg_val > 2.0 or avg_val < 0.05):
-                     times = [(t - min_t) * scale for t in times]
-                     st.caption(f"已自动缩放 X 轴以适配音乐播放 (原范围: {min_t:.1f}~{min_t+x_span:.1f})")
-                else:
-                     # 仅平移
-                     times = [t - min_t for t in times]
-                     
-    except Exception as e:
-        st.error(f"数据列转换失败，请确保所选列包含数值数据: {e}")
-        st.error(f"数据列转换失败，请确保所选列包含数值数据: {e}")
-        st.stop()
-    
-    if not times or not values:
-        st.error("数据为空或转换后无有效数据点。")
-    else:
-        st.success(f"成功加载 {len(times)} 个有效数据点！")
-
-        
-        # 2. Visualize & Analyze
-        col1, col2 = st.columns([2, 1])
-        
-        # Analyze first
-        peaks = analyzer.find_peaks_in_data(times, values)
-        rhythm = analyzer.calculate_rhythm_pattern(peaks)
-        
-        with col1:
-            st.subheader("数据可视化")
-            # Create a Plotly chart for better interaction
-            import plotly.graph_objects as go
-            
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=times, y=values, mode='lines', name='Chemical Data'))
-            
-            # Add peaks
-            peak_times = [p['time'] for p in peaks]
-            peak_values = [p['value'] for p in peaks]
-            fig.add_trace(go.Scatter(x=peak_times, y=peak_values, mode='markers', name='Peaks (Beats)', marker=dict(color='red', size=10, symbol='x')))
-            
-            st.plotly_chart(fig, use_container_width=True)
-
-        with col2:
-            st.subheader("分析结果")
-            st.metric("检测到的波峰数", len(peaks))
-            
-            # Show top peaks
-            if peaks:
-                peak_df = pd.DataFrame(peaks)
-                st.dataframe(peak_df.sort_values('value', ascending=False).head(5), height=150)
-            
-            original_bpm = rhythm.get('bpm', 0)
-            st.metric("计算 BPM", f"{original_bpm:.1f}")
-            
-        # 3. Generate Music Section
-        st.markdown("---")
-        st.header("🎵 生成音乐")
-        
-        # Controls
-        col_ctrl1, col_ctrl2 = st.columns(2)
-        with col_ctrl1:
-           regen = st.button("生成/重新生成 交响乐", type="primary")
-           
-        if regen:
-            with st.spinner("正在谱曲..."):
-                # Apply override if set
-                current_bpm = bpm_override if bpm_override > 0 else original_bpm
-                # Update rhythm dictionary with new BPM safely
-                rhythm['bpm'] = current_bpm
-                
-                # A. Generate MIDI
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".mid") as tmp_file:
-                    output_filename = tmp_file.name
-                
-                music_engine.generate_full_arrangement(times, values, rhythm, output_filename)
-                
-                # B. Generate Audio Preview (WAV)
-                wav_bytes = music_engine.generate_audio_preview(times, values, rhythm)
-                
-                # --- Result Display ---
-                st.success("音乐生成完毕！")
-                
-                st.subheader("🎧 在线试听 (合成预览)")
-                if wav_bytes:
-                    st.audio(wav_bytes, format='audio/wav')
-                else:
-                    st.warning("音频预览生成失败。")
-                
-                st.subheader("📥 下载")
-                # MIDI Download
-                if os.path.exists(output_filename):
-                    with open(output_filename, "rb") as f:
-                        midi_data = f.read()
+        if generate_btn:
+             with st.spinner("🎸 AI 作曲家正在工作... (生成 MIDI 音序, 合成波形)"):
+                try:
+                    # Update settings
+                    current_bpm = bpm_override if bpm_override > 0 else rhythm.get('bpm', 120)
+                    rhythm['bpm'] = current_bpm
                     
-                    st.download_button(
-                        label="下载 MIDI 文件 (Chemical_Symphony.mid)",
-                        data=midi_data,
-                        file_name="chemical_symphony.mid",
-                        mime="audio/midi",
-                        help="MIDI 文件包含完整的乐谱信息，可导入 DAW 进行高质量制作。"
-                    )
+                    # 1. MIDI
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".mid") as tmp_mid:
+                        mid_path = tmp_mid.name
+                    music_engine.generate_full_arrangement(times, values, rhythm, mid_path)
                     
-                    # Cleanup temp file
-                    try:
-                        os.unlink(output_filename)
-                    except:
-                        pass
+                    with open(mid_path, "rb") as f:
+                        midi_bytes = f.read()
                     
-                    st.info("提示: MIDI 文件需要使用播放器 (如 Windows Media Player, VLC) 打开，或导入宿主软件 (DAW)。")
-                
-                # Cleanup
-                # os.unlink(generated_file) # Don't delete immediately so user can download. Streamlit reruns might clean up? 
-                # Better to just leave it or rely on tempfile.NamedTemporaryFile(delete=False) logic and clean up later.
-                # For simplicity in this demo, we leave the temp file.
+                    # 2. WAV
+                    wav_io = music_engine.generate_audio_preview(times, values, rhythm)
+                    
+                    # Save to state
+                    st.session_state.music_data = {
+                        'midi': midi_bytes,
+                        'wav': wav_io,
+                        'mid_path': mid_path # Warning: tmp file might be deleted by OS, but usually ok for session
+                    }
+                    st.success("✨ 音乐生成成功！")
+                except Exception as e:
+                    st.error(f"生成失败: {e}")
+
+        # --- Playback Interface ---
+        if st.session_state.music_data:
+            st.subheader("🎧 沉浸式播放器")
+            
+            # Use the Custom Component for Sync
+            if st.session_state.music_data.get('wav'):
+                chart_sync.sync_audio_with_chart(
+                    times, 
+                    values, 
+                    st.session_state.music_data['wav'],
+                    height=450
+                )
+            else:
+                st.warning("音频数据好像丢失了，请重新生成。")
+            
+            # --- Downloads ---
+            st.markdown("### 📥 下载作品")
+            d_col1, d_col2 = st.columns(2)
+            
+            with d_col1:
+                st.download_button(
+                    label="💾 下载 MIDI 乐谱文件",
+                    data=st.session_state.music_data['midi'],
+                    file_name="chemical_symphony.mid",
+                    mime="audio/midi",
+                    use_container_width=True
+                )
+            
+            with d_col2:
+                # Need to reset pointer for download if it was read
+                wav_io = st.session_state.music_data['wav']
+                wav_io.seek(0)
+                st.download_button(
+                    label="💾 下载 WAV 音频文件",
+                    data=wav_io,
+                    file_name="chemical_symphony.wav",
+                    mime="audio/wav",
+                    use_container_width=True
+                )
 
 else:
-    st.info("请在左侧上传 CSV 文件以开始。")
+    # Welcome / Empty State
+    st.info("👈 请在左侧侧边栏上传文件开始使用。")
+    
+    # Demo Data Button (Optional, for quick start)
+    if st.button("没有数据？使用示例数据演示"):
+        # Create a dummy CSV
+        csv = "Time,Absorbance\n0,0.1\n1,0.2\n2,0.5\n3,0.8\n4,0.4\n5,0.2\n6,0.1\n7,0.3\n8,0.6\n9,0.9\n10,0.5"
+        # This is a bit tricky to mock file_uploader, so we just guide user
+        st.write("请复制以下内容保存为 `demo.csv` 并上传:")
+        st.code(csv, language='csv')
