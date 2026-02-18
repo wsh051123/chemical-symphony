@@ -88,6 +88,21 @@ def generate_full_arrangement(times, values, rhythm_data, filename='chemical_ful
     else:
         # Piano Left Hand
         track1.append(mido.Message('program_change', program=0, time=0, channel=1))
+
+    # --- Track 2: Lyrics (Hakimi Style) ---
+    track2 = mido.MidiTrack()
+    mid.tracks.append(track2)
+    track2.append(mido.MetaMessage('track_name', name='Lyrics', time=0))
+    
+    hakimi_lyrics = [
+        "哈基米啊南北绿豆",
+        "南北绿豆哈吉嘎西",
+        "啊西噶南北绿豆耶打",
+        "哈基米啊南北绿豆",
+        "南北绿豆哈吉嘎西",
+        "啊西噶南北绿豆耶打"
+    ]
+    lyrics_events = []
     
     # --- Analyze Data Trends ---
     # Convert inputs to numpy for vectorized ops
@@ -247,7 +262,7 @@ def generate_full_arrangement(times, values, rhythm_data, filename='chemical_ful
         
         if style == 'hakimi':
             # "Chipi Chipi" Bass: Octaves on the beat or pounding 8th notes
-            # Let'_labels do a driving bass: Root-Root-Root-Root (Eighth notes)
+            # Let's do a driving bass: Root-Root-Root-Root (Eighth notes)
             for eig in range(8):
                 n = root - 12 # Deep bass
                 tick = lh_base_tick + eig * 240
@@ -255,28 +270,20 @@ def generate_full_arrangement(times, values, rhythm_data, filename='chemical_ful
                 harmony_events.append({'tick': tick + 120, 'type': 'note_off', 'note': n, 'velocity': 0, 'channel': 1})
                 
                 # Add a "clap" or high hat effect on weak beats? 
-                # (Can't easy add percussion channel without channel 9, let's stick to harmony track)
-                # Maybe play the chord on the off-beat (2 & 4)?
                 if eig % 4 == 2 or eig % 4 == 6: # Beats 2 and 4 approx
                      # Chord stab
                      for cn in chord_notes:
                          harmony_events.append({'tick': tick, 'type': 'note_on', 'note': cn, 'velocity': lh_velocity - 10, 'channel': 1})
                          harmony_events.append({'tick': tick + 100, 'type': 'note_off', 'note': cn, 'velocity': 0, 'channel': 1})
 
-        elif style_label == 'calm':
-            # ... (Existing Calm Logic)# A Minor
-            chord_notes = [root, root+3, root+7]
-        elif bar % 4 == 2: # F Major
-            chord_notes = [root, root+4, root+7]
-        else: # G Major
-            chord_notes = [root, root+4, root+7]
+            # Add Lyrics event at start of bar (every 2 bars for one line)
+            # 6 lines total. 
+            if bar % 2 == 0:
+                lyric_idx = (bar // 2) % len(hakimi_lyrics)
+                lyric_text = hakimi_lyrics[lyric_idx]
+                lyrics_events.append({'tick': lh_base_tick, 'type': 'lyrics', 'text': lyric_text})
 
-        lh_base_tick = bar * 480 * 4
-        
-        # Left hand velocity - softer than melody
-        lh_velocity = 60 
-        
-        if style == 'calm':
+        elif style_label == 'calm':
             # Broken chord waltz or arpeggio (Quarter notes)
             # Root - 5th - 3rd - 5th
             for beat in range(4):
@@ -289,7 +296,7 @@ def generate_full_arrangement(times, values, rhythm_data, filename='chemical_ful
                 harmony_events.append({'tick': tick, 'type': 'note_on', 'note': n, 'velocity': lh_velocity - 10, 'channel': 1})
                 harmony_events.append({'tick': tick + 400, 'type': 'note_off', 'note': n, 'velocity': 0, 'channel': 1})
             
-        elif style == 'flowing':
+        elif style_label == 'flowing':
             # Alberti Bass (Eighth notes) - "Mozart Style"
             # Pattern: Root - 5th - 3rd - 5th (x2 per bar)
             pattern = [0, 2, 1, 2] * 2
@@ -324,6 +331,15 @@ def generate_full_arrangement(times, values, rhythm_data, filename='chemical_ful
         delta = max(0, e['tick'] - last_tick)
         track1.append(mido.Message(e['type'], note=e['note'], velocity=e['velocity'], time=delta, channel=1))
         last_tick = e['tick']
+
+    # Write Lyrics Track
+    if style == 'hakimi':
+        lyrics_events.sort(key=lambda x: x['tick'])
+        last_tick = 0
+        for e in lyrics_events:
+            delta = max(0, e['tick'] - last_tick)
+            track2.append(mido.MetaMessage('lyrics', text=e['text'], time=delta))
+            last_tick = e['tick']
 
     mid.save(filename)
     return filename
