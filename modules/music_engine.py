@@ -44,38 +44,50 @@ def map_value_to_note(value, min_val, max_val, last_note=None):
     
     return C_MAJOR_SCALE[mapped_idx]
 
-def generate_full_arrangement(times, values, rhythm_data, filename='chemical_full_song.mid'):
+def generate_full_arrangement(times, values, rhythm_data, filename='chemical_full_song.mid', style='default'):
     """
-    Generate elegant piano arrangement.
-    Adapts rhythm and density based on data trends (rate of change).
+    Generate arrangement based on style.
+    styles: 'default' (Piano), 'hakimi' (High energy, repetitive, fun)
     """
     mid = mido.MidiFile(type=1)
     
     # 1. Setup Timing & Global Config
-    bpm = rhythm_data.get('bpm', 120)
-    # Target a relaxed Adagio to Andante range (60-90 BPM) for base
-    # Logic: if data is volatile, it will speed up naturally via note density, no need for high base BPM.
-    # Update: Set to 96 BPM for a brighter, more lively feel
-    target_bpm = 96
-    
+    if style == 'hakimi':
+        target_bpm = 145 # Fast, energetic (Chipi Chipi style)
+    else:
+        bpm = rhythm_data.get('bpm', 120)
+        target_bpm = 96 # Classical/Piano feel
+
     mid.ticks_per_beat = 480
     ticks_per_second = (target_bpm / 60) * 480
     
     start_time = times[0]
     total_duration = times[-1] - start_time
     
-    # --- Track 0: Melody (Acoustic Grand Piano) ---
+    # --- Track 0: Melody ---
     track0 = mido.MidiTrack()
     mid.tracks.append(track0)
     track0.append(mido.MetaMessage('set_tempo', tempo=mido.bpm2tempo(int(target_bpm)), time=0))
-    track0.append(mido.MetaMessage('track_name', name='Piano Melody', time=0))
-    track0.append(mido.Message('program_change', program=0, time=0, channel=0))
+    track0.append(mido.MetaMessage('track_name', name='Melody', time=0))
+    
+    if style == 'hakimi':
+        # Bright Synth or synth lead
+        track0.append(mido.Message('program_change', program=80, time=0, channel=0)) # 80: Lead 1 (square) or 81 (sawtooth)
+    else:
+        # Acoustic Grand Piano
+        track0.append(mido.Message('program_change', program=0, time=0, channel=0))
 
-    # --- Track 1: Arpeggio/Harmony (Piano Left Hand) ---
+    # --- Track 1: Backing/Harmony ---
     track1 = mido.MidiTrack()
     mid.tracks.append(track1)
-    track1.append(mido.MetaMessage('track_name', name='Piano Harmony', time=0))
-    track1.append(mido.Message('program_change', program=0, time=0, channel=1))
+    track1.append(mido.MetaMessage('track_name', name='Harmony', time=0))
+    
+    if style == 'hakimi':
+        # Electric Bass or Synth Bass
+        track1.append(mido.Message('program_change', program=38, time=0, channel=1)) # 38: Synth Bass 1
+    else:
+        # Piano Left Hand
+        track1.append(mido.Message('program_change', program=0, time=0, channel=1))
     
     # --- Analyze Data Trends ---
     # Convert inputs to numpy for vectorized ops
@@ -99,17 +111,10 @@ def generate_full_arrangement(times, values, rhythm_data, filename='chemical_ful
     seconds_per_bar = (60 / target_bpm) * 4
     num_bars = int(np.ceil(total_duration / seconds_per_bar)) + 1
     
-    melody_events = []
-    harmony_events = []
-    
-    # Global average change to determine thresholds
-    global_grad = np.mean(np.abs(np.gradient(norm_vals))) if len(norm_vals) > 1 else 0
-    
-    last_note = None
-    
-    # Progression: I - vi - IV - V (C - Am - F - G)
-    chord_roots = [48, 45, 41, 43] # C2, A1, F1, G1
-    progression_len = len(chord_roots)
+    # Hakimi Progression: Often repetitive simple Major chords. Let's use I - V - vi - IV (Pop Punk/Anime) or just bouncing I - V
+    # Let's stick to C - G - Am - F for Hakimi (I - V - vi - IV) which is very common in upbeat songs
+    if style == 'hakimi':
+        chord_roots = [48, 55, 45, 41] # C, G, A, F
 
     for bar in range(num_bars):
         bar_start_sec = start_time + bar * seconds_per_bar
@@ -134,23 +139,26 @@ def generate_full_arrangement(times, values, rhythm_data, filename='chemical_ful
                 intensity = 1.0 # Flat line
         
         # Determine Rhythmic Density (Notes per beat)
-        # Low intensity (< 0.5) -> Quarter notes (1 note/beat) - Calm
-        # Medium intensity (0.5 - 1.5) -> Eighth notes (2 notes/beat) - Moving
-        # High intensity (> 1.5) -> Sixteenth notes (4 notes/beat) - Rapid/Agitated
-        
-        if intensity > 1.5:
-            notes_per_beat = 4
-            style = 'rapid'
-        elif intensity > 0.6:
-            notes_per_beat = 2
-            style = 'flowing'
+        if style == 'hakimi':
+            # Hakimi is always high energy
+            notes_per_beat = 4 if intensity > 0.8 else 2
+            style_label = 'rapid'
+            base_velocity = 100 # Loud
         else:
-            notes_per_beat = 1
-            style = 'calm'
+            if intensity > 1.5:
+                notes_per_beat = 4
+                style_label = 'rapid'
+            elif intensity > 0.6:
+                notes_per_beat = 2
+                style_label = 'flowing'
+            else:
+                notes_per_beat = 1
+                style_label = 'calm'
+            base_velocity = 80 + int(avg_height * 35)
             
         # Refine style by height: High value = louder, brighter
         # Increase base velocity for "crisp" piano sound (Lang Lang style: clear articulation)
-        base_velocity = 80 + int(avg_height * 35) # Range approx 80 - 115
+        # base_velocity calculated above
         
         # --- Generate Melody for this Bar ---
         total_beats = 4
@@ -159,9 +167,9 @@ def generate_full_arrangement(times, values, rhythm_data, filename='chemical_ful
         
         # To avoid "dragging", ensure note duration is shorter than step
         # Shorter staccato for rapid/flowing to emulate crisp finger work
-        if style == 'rapid':
-            gate = 0.6 # Very crisp staccato
-        elif style == 'flowing':
+        if style_label == 'rapid':
+            gate = 0.5 if style == 'hakimi' else 0.6 # Very crisp staccato
+        elif style_label == 'flowing':
             gate = 0.75 # Non-legato
         else:
             gate = 0.9 # Legato for slow parts
@@ -186,6 +194,9 @@ def generate_full_arrangement(times, values, rhythm_data, filename='chemical_ful
             # Using new C Major scale
             note = map_value_to_note(val, min_val, max_val, last_note)
             
+            # Hakimi Optimization: Force notes to be more "jumpy" or arpeggiated if needed?
+            # actually map_value_to_note is fine.
+            
             # Add micro-dynamics: accent the first note of beat
             current_velocity = base_velocity
             if i % notes_per_beat == 0:
@@ -204,17 +215,48 @@ def generate_full_arrangement(times, values, rhythm_data, filename='chemical_ful
             last_note = note
 
         # --- Generate Left Hand Accompaniment for this Bar ---
-        # Shift root up an octave if it's too muddy (below C2=36 is muddy)
-        # Current roots: 48, 45, 41, 43 (C2..G1). Pretty low.
-        # Let's shift +12 to C3..G2 for clarity, or keep as bass but ensure velocity is controlled.
-        # Actually, standard piano bass is around C2-C3.
         
         root = chord_roots[bar % progression_len]
-        # Construct triad: Root, 3rd (approx +4), 5th (+7)
-        # Major C (C, E, G), Am (A, C, E), F (F, A, C), G (G, B, D)
-        if bar % 4 == 0: # C Major
-            chord_notes = [root, root+4, root+7]
-        elif bar % 4 == 1: # A Minor
+        
+        # Chords logic
+        if style == 'hakimi':
+             # Simple Major/Minor construction
+             # C, G, Am, F
+             if bar % 4 == 0: chord_notes = [root, root+4, root+7] # C
+             elif bar % 4 == 1: chord_notes = [root, root+4, root+7] # G (using mapped root)
+             elif bar % 4 == 2: chord_notes = [root, root+3, root+7] # Am
+             else: chord_notes = [root, root+4, root+7] # F
+        else:
+             if bar % 4 == 0: chord_notes = [root, root+4, root+7] # C
+             elif bar % 4 == 1: chord_notes = [root, root+3, root+7] # Am
+             elif bar % 4 == 2: chord_notes = [root, root+4, root+7] # F
+             else: chord_notes = [root, root+4, root+7] # G
+
+        lh_base_tick = bar * 480 * 4
+        
+        # Left hand velocity
+        lh_velocity = 90 if style == 'hakimi' else 60
+        
+        if style == 'hakimi':
+            # "Chipi Chipi" Bass: Octaves on the beat or pounding 8th notes
+            # Let'_labels do a driving bass: Root-Root-Root-Root (Eighth notes)
+            for eig in range(8):
+                n = root - 12 # Deep bass
+                tick = lh_base_tick + eig * 240
+                harmony_events.append({'tick': tick, 'type': 'note_on', 'note': n, 'velocity': lh_velocity, 'channel': 1})
+                harmony_events.append({'tick': tick + 120, 'type': 'note_off', 'note': n, 'velocity': 0, 'channel': 1})
+                
+                # Add a "clap" or high hat effect on weak beats? 
+                # (Can't easy add percussion channel without channel 9, let's stick to harmony track)
+                # Maybe play the chord on the off-beat (2 & 4)?
+                if eig % 4 == 2 or eig % 4 == 6: # Beats 2 and 4 approx
+                     # Chord stab
+                     for cn in chord_notes:
+                         harmony_events.append({'tick': tick, 'type': 'note_on', 'note': cn, 'velocity': lh_velocity - 10, 'channel': 1})
+                         harmony_events.append({'tick': tick + 100, 'type': 'note_off', 'note': cn, 'velocity': 0, 'channel': 1})
+
+        elif style_label == 'calm':
+            # ... (Existing Calm Logic)# A Minor
             chord_notes = [root, root+3, root+7]
         elif bar % 4 == 2: # F Major
             chord_notes = [root, root+4, root+7]

@@ -76,6 +76,7 @@ with st.sidebar:
     st.markdown("---")
     
     with st.expander("⚙️ 2. 音乐参数", expanded=True):
+        music_style = st.selectbox("音乐风格", ["🎹 优雅古典 (Classic Piano)", "😺 哈基米 (Happy Hakimi)"], index=0, help="选择生成的音乐风格")
         bpm_override = st.number_input("BPM (速度)", min_value=0, max_value=240, value=0, help="设为 0 则根据数据特征自动计算")
         target_duration = st.slider("目标时长 (秒)", 15, 120, 60, help="将数据自动缩放至约这个时长的音乐")
         
@@ -254,7 +255,10 @@ if uploaded_file is not None:
                     # 1. MIDI
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".mid") as tmp_mid:
                         mid_path = tmp_mid.name
-                    music_engine.generate_full_arrangement(times, values, rhythm, mid_path)
+                    
+                    style_code = 'hakimi' if '哈基米' in music_style else 'default'
+                    
+                    music_engine.generate_full_arrangement(times, values, rhythm, mid_path, style=style_code)
                     
                     with open(mid_path, "rb") as f:
                         midi_bytes = f.read()
