@@ -111,10 +111,18 @@ def generate_full_arrangement(times, values, rhythm_data, filename='chemical_ful
     seconds_per_bar = (60 / target_bpm) * 4
     num_bars = int(np.ceil(total_duration / seconds_per_bar)) + 1
     
-    # Hakimi Progression: Often repetitive simple Major chords. Let's use I - V - vi - IV (Pop Punk/Anime) or just bouncing I - V
-    # Let's stick to C - G - Am - F for Hakimi (I - V - vi - IV) which is very common in upbeat songs
-    if style == 'hakimi':
-        chord_roots = [48, 55, 45, 41] # C, G, A, F
+    melody_events = []
+    harmony_events = []
+    
+    # Global average change to determine thresholds
+    global_grad = np.mean(np.abs(np.gradient(norm_vals))) if len(norm_vals) > 1 else 0
+    
+    last_note = None
+
+    # Progression: I - vi - IV - V (C - Am - F - G)
+    chord_roots = [48, 45, 41, 43] # C2, A1, F1, G1
+    progression_len = len(chord_roots)
+
 
     for bar in range(num_bars):
         bar_start_sec = start_time + bar * seconds_per_bar
